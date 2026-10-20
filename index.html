@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fantasy Live Scores</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #14181f; --muted: #6b7380;
+    --line: #e4e7ec; --above: #12804a; --above-bg: #e3f5eb;
+    --below: #c0392b; --below-bg: #fbe9e7; --even: #6b7380; --accent: #2f5bea;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1217; --card: #181c23; --text: #eef1f5; --muted: #929aa8;
+      --line: #272c36; --above: #4ade80; --above-bg: #12301f;
+      --below: #ff7b6b; --below-bg: #3a1a17; --even: #929aa8; --accent: #7c9bff;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: max(16px, env(safe-area-inset-top)) 14px max(24px, env(safe-area-inset-bottom));
+  }
+  .wrap { max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 4px 0 2px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  .controls { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .controls button, .controls select {
+    background: var(--card); color: var(--text); border: 1px solid var(--line);
+    border-radius: 10px; padding: 9px 12px; font: inherit; font-size: 15px;
+  }
+  .controls .spacer { flex: 1; }
+  .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--above); animation: pulse 2s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .summary {
+    display: flex; justify-content: space-between; background: var(--card);
+    border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin-bottom: 12px;
+  }
+  .summary div { text-align: center; flex: 1; }
+  .summary b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+  .summary span { font-size: 12px; color: var(--muted); }
+  .list { display: flex; flex-direction: column; gap: 8px; }
+  .row {
+    display: flex; align-items: center; gap: 10px; background: var(--card);
+    border: 1px solid var(--line); border-left-width: 5px; border-radius: 12px; padding: 10px 12px;
+  }
+  .row.above { border-left-color: var(--above); }
+  .row.below { border-left-color: var(--below); }
+  .row.even { border-left-color: var(--even); }
+  .rank { width: 22px; text-align: center; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .av { width: 36px; height: 36px; border-radius: 50%; background: var(--line); flex: none; object-fit: cover; }
+  .info { flex: 1; min-width: 0; }
+  .team { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .owner { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .score { text-align: right; }
+  .pts { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .badge {
+    display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px;
+    border-radius: 999px; font-variant-numeric: tabular-nums;
+  }
+  .badge.above { color: var(--above); background: var(--above-bg); }
+  .badge.below { color: var(--below); background: var(--below-bg); }
+  .badge.even { color: var(--even); background: var(--line); }
+  .median-line {
+    display: flex; align-items: center; gap: 10px; color: var(--accent);
+    font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; margin: 4px 0;
+  }
+  .median-line::before, .median-line::after { content: ""; flex: 1; height: 2px; background: var(--accent); opacity: .5; border-radius: 2px; }
+  .msg { text-align: center; color: var(--muted); padding: 30px 10px; }
+  .err { color: var(--below); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 id="title">Fantasy Live Scores</h1>
+  <div class="sub" id="sub">Loading…</div>
+
+  <div class="controls">
+    <select id="week" aria-label="Week"></select>
+    <button id="refresh" type="button">Refresh</button>
+    <span class="spacer"></span>
+    <span class="live"><span class="dot"></span><span id="updated">–</span></span>
+  </div>
+
+  <div id="summary"></div>
+  <div class="list" id="list"><div class="msg">Loading scores…</div></div>
+</div>
+
+<script>
+(function () {
+  var LEAGUE_ID = "1389332281633566720";
+  var API = "https://api.sleeper.app/v1";
+  var REFRESH_MS = 60000;
+
+  var state = { week: null, users: null, rosters: null, league: null };
+  var $ = function (id) { return document.getElementById(id); };
+
+  function getJSON(path) {
+    return fetch(API + path).then(function (r) {
+      if (!r.ok) throw new Error("Sleeper returned " + r.status);
+      return r.json();
+    });
+  }
+
+  function median(nums) {
+    var s = nums.slice().sort(function (a, b) { return a - b; });
+    var n = s.length;
+    if (!n) return 0;
+    return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2;
+  }
+
+  function fmt(n) { return (Math.round(n * 100) / 100).toFixed(2); }
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function loadStatic() {
+    if (state.users) return Promise.resolve();
+    return Promise.all([
+      getJSON("/league/" + LEAGUE_ID),
+      getJSON("/league/" + LEAGUE_ID + "/users"),
+      getJSON("/league/" + LEAGUE_ID + "/rosters"),
+      getJSON("/state/nfl")
+    ]).then(function (res) {
+      state.league = res[0];
+      state.users = {};
+      res[1].forEach(function (u) { state.users[u.user_id] = u; });
+      state.rosters = {};
+      res[2].forEach(function (r) { state.rosters[r.roster_id] = r; });
+
+      var nflWeek = res[3].week || 1;
+      var maxWeek = 18;
+      state.week = Math.min(Math.max(nflWeek, 1), maxWeek);
+
+      var sel = $("week");
+      sel.innerHTML = "";
+      for (var w = 1; w <= maxWeek; w++) {
+        var o = document.createElement("option");
+        o.value = w; o.textContent = "Week " + w;
+        sel.appendChild(o);
+      }
+      sel.value = state.week;
+      $("title").textContent = res[0].name || "Fantasy Live Scores";
+    });
+  }
+
+  function render(matchups) {
+    var teams = matchups.map(function (m) {
+      var roster = state.rosters[m.roster_id] || {};
+      var user = state.users[roster.owner_id] || {};
+      var meta = user.metadata || {};
+      return {
+        name: meta.team_name || user.display_name || ("Team " + m.roster_id),
+        owner: user.display_name || "",
+        avatar: user.avatar ? "https://sleepercdn.com/avatars/thumbs/" + user.avatar : "",
+        pts: Number(m.points) || 0
+      };
+    });
+
+    teams.sort(function (a, b) { return b.pts - a.pts; });
+    var med = median(teams.map(function (t) { return t.pts; }));
+    var above = 0, below = 0;
+    teams.forEach(function (t) {
+      t.status = t.pts > med ? "above" : (t.pts < med ? "below" : "even");
+      if (t.status === "above") above++;
+      if (t.status === "below") below++;
+    });
+
+    $("summary").innerHTML =
+      '<div class="summary">' +
+        '<div><b>' + fmt(med) + '</b><span>Median</span></div>' +
+        '<div><b style="color:var(--above)">' + above + '</b><span>Above</span></div>' +
+        '<div><b style="color:var(--below)">' + below + '</b><span>Below</span></div>' +
+      '</div>';
+
+    var html = "";
+    var lineDone = false;
+    teams.forEach(function (t, i) {
+      if (!lineDone && t.status !== "above") {
+        html += '<div class="median-line">Median ' + fmt(med) + '</div>';
+        lineDone = true;
+      }
+      var diff = t.pts - med;
+      var label = t.status === "even" ? "At median"
+        : (diff > 0 ? "+" : "\u2212") + fmt(Math.abs(diff));
+      html +=
+        '<div class="row ' + t.status + '">' +
+          '<div class="rank">' + (i + 1) + '</div>' +
+          (t.avatar ? '<img class="av" src="' + esc(t.avatar) + '" alt="">' : '<div class="av"></div>') +
+          '<div class="info"><div class="team">' + esc(t.name) + '</div>' +
+          '<div class="owner">' + esc(t.owner) + '</div></div>' +
+          '<div class="score"><div class="pts">' + fmt(t.pts) + '</div>' +
+          '<span class="badge ' + t.status + '">' + label + '</span></div>' +
+        '</div>';
+    });
+    $("list").innerHTML = html || '<div class="msg">No matchups found for this week.</div>';
+    $("sub").textContent = (state.league && state.league.season ? state.league.season + " season \u00b7 " : "") +
+      "Week " + state.week + " \u00b7 refreshes every minute";
+  }
+
+  function refresh() {
+    return loadStatic()
+      .then(function () { return getJSON("/league/" + LEAGUE_ID + "/matchups/" + state.week); })
+      .then(function (matchups) {
+        render(matchups);
+        $("updated").textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      })
+      .catch(function (e) {
+        $("list").innerHTML = '<div class="msg err">Couldn\u2019t load scores: ' + esc(e.message) + '</div>';
+      });
+  }
+
+  $("week").addEventListener("change", function (e) { state.week = Number(e.target.value); refresh(); });
+  $("refresh").addEventListener("click", refresh);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) refresh(); });
+
+  refresh();
+  setInterval(function () { if (!document.hidden) refresh(); }, REFRESH_MS);
+})();
+</script>
+</body>
+</html>
